@@ -1,72 +1,28 @@
 # Databricks Apps configuration file
 # This file defines the application specification for Databricks Apps deployment
 
-spec:
-  containers:
-  - name: file-test-app
-    # Note: In actual Databricks deployment, you'll need to build and push
-    # a Docker image to your Databricks container registry
-    # For now, this shows the structure
-    image: /your-workspace/your-schema/your-repo/file-test-app:latest
-    
-    env:
-      # Python configuration
-      - name: PYTHONPATH
-        value: "/workspace"
-      
-      - name: PYTHONUNBUFFERED
-        value: "1"
-      
-      # Workspace directory (Databricks Apps provides this)
-      - name: WORKSPACE_DIR
-        value: "/workspace"
-      
-      # Port (Databricks Apps provides this via PORT environment variable)
-      - name: PORT
-        value: "8000"
-      
-      # Host binding
-      - name: HOST
-        value: "0.0.0.0"
-      
-      # Logging
-      - name: LOG_LEVEL
-        value: "INFO"
-    
-    resources:
-      requests:
-        cpu: 1
-        memory: 1G
-      limits:
-        cpu: 2
-        memory: 2G
-    
-    # Health check for Databricks Apps
-    readinessProbe:
-      port: 8000
-      path: /api/healthcheck
-      initialDelaySeconds: 10
-      periodSeconds: 5
-    
-    # Volume mounts for persistent storage (if needed)
-    # In Databricks Apps, you can mount volumes for persistent data
-    volumeMounts:
-    - name: workspace-storage
-      mountPath: /workspace
-    
-  volumes:
-  - name: workspace-storage
-    # Databricks Apps volume source
-    # Format: @{catalog}.{schema}.{volume_name}
-    source: "@your_catalog.your_schema.workspace_storage"
-  
-  endpoints:
-  - name: api
-    port: 8000
-    public: true
-  
-  logExporters:
-    eventTableConfig:
-      logLevel: INFO
-      metricLevel: FULL
+# Command to launch the application
+command:
+  - python
+  - app.py
 
+# Environment variables
+env:
+  # Python configuration
+  - name: PYTHONPATH
+    value: "./workspace"
+  
+  - name: PYTHONUNBUFFERED
+    value: "1"
+  
+  # Workspace directory (Databricks Apps provides this)
+  - name: WORKSPACE_DIR
+    value: "/Workspace/.bundle/genesis/volumes/volume"
+  
+  # Port (Databricks Apps provides this via PORT environment variable)
+  - name: PORT
+    value: "8000"
+  
+  # Host binding
+  - name: HOST
+    value: "0.0.0.0"
