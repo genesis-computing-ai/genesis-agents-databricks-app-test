@@ -6,25 +6,30 @@ This app provides:
 - File write operations (POST endpoint)
 - Simple HTML UI for testing
 - Health check endpoint
+- Filesystem discovery endpoint for finding writable directories
 """
 
 import os
 import json
+import stat
+import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, List, Any
 from fastapi import FastAPI, HTTPException, Form, File, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(title="Databricks File Access Test", version="1.0.0")
 
-# Base directory for file operations
+# Base directory for file operations (lazy initialization - not accessed at startup)
 # In Databricks Apps, this will be the workspace directory
-BASE_DIR = Path(os.getenv("WORKSPACE_DIR", "/workspace"))
-FILES_DIR = BASE_DIR / "files"
+def get_base_dir() -> Path:
+    """Get base directory from environment variable."""
+    return Path(os.getenv("WORKSPACE_DIR", "/workspace"))
 
-# Ensure files directory exists
-FILES_DIR.mkdir(parents=True, exist_ok=True)
+def get_files_dir() -> Path:
+    """Get files directory (lazy - doesn't create on startup)."""
+    return get_base_dir() / "files"
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -116,6 +121,13 @@ async def root():
             <h1>Databricks File Access Test Application</h1>
             
             <div class="section">
+                <h2>Filesystem Discovery</h2>
+                <p>Discover all directories with write access on the runtime system.</p>
+                <button onclick="discoverFilesystem()">Discover Writable Directories</button>
+                <div id="discover-result" class="result" style="display:none;"></div>
+            </div>
+            
+            <div class="section">
                 <h2>Environment Information</h2>
                 <div id="env-info" class="result info">Loading...</div>
             </div>
@@ -130,7 +142,7 @@ async def root():
             
             <div class="section">
                 <h2>Write File</h2>
-                <label for="write-filename">Filename (relative to /workspace/files):</label>
+                <label for="write-filename">Filename (written directly to WORKSPACE_DIR):</label>
                 <input type="text" id="write-filename" placeholder="test.txt" value="test.txt">
                 <label for="write-content">Content:</label>
                 <textarea id="write-content" rows="5" placeholder="Enter file content here...">Hello from Databricks Apps!
@@ -168,6 +180,16 @@ Timestamp: </textarea>
                         document.getElementById('env-info').className = 'result error';
                     });
             };
+            
+            async function discoverFilesystem() {
+                try {
+                    const response = await fetch('/api/discover');
+                    const data = await response.json();
+                    showResult('discover-result', data, !response.ok);
+                } catch (err) {
+                    showResult('discover-result', 'Error: ' + err.message, true);
+                }
+            }
             
             function showResult(elementId, data, isError) {
                 const element = document.getElementById(elementId);
@@ -235,31 +257,241 @@ Timestamp: </textarea>
 @app.get("/api/healthcheck")
 async def healthcheck():
     """Health check endpoint for Databricks Apps readiness probe."""
+    base_dir = get_base_dir()
+    files_dir = get_files_dir()
     return {
         "status": "healthy",
-        "base_dir": str(BASE_DIR),
-        "files_dir": str(FILES_DIR),
-        "base_dir_exists": BASE_DIR.exists(),
-        "files_dir_exists": FILES_DIR.exists(),
-        "base_dir_writable": os.access(BASE_DIR, os.W_OK) if BASE_DIR.exists() else False,
-        "files_dir_writable": os.access(FILES_DIR, os.W_OK) if FILES_DIR.exists() else False,
+        "base_dir": str(base_dir),
+        "files_dir": str(files_dir),
+        "base_dir_exists": base_dir.exists(),
+        "files_dir_exists": files_dir.exists(),
+        "base_dir_writable": os.access(base_dir, os.W_OK) if base_dir.exists() else False,
+        "files_dir_writable": os.access(files_dir, os.W_OK) if files_dir.exists() else False,
     }
 
 
 @app.get("/api/env")
 async def get_env():
     """Get environment information for debugging."""
+    base_dir = get_base_dir()
+    files_dir = get_files_dir()
     return {
         "workspace_dir": os.getenv("WORKSPACE_DIR", "NOT SET"),
-        "base_dir": str(BASE_DIR),
-        "files_dir": str(FILES_DIR),
+        "base_dir": str(base_dir),
+        "files_dir": str(files_dir),
         "pythonpath": os.getenv("PYTHONPATH", "NOT SET"),
         "port": os.getenv("PORT", "NOT SET"),
         "cwd": os.getcwd(),
         "user": os.getenv("USER", "NOT SET"),
-        "base_dir_exists": BASE_DIR.exists(),
-        "files_dir_exists": FILES_DIR.exists(),
+        "base_dir_exists": base_dir.exists(),
+        "files_dir_exists": files_dir.exists(),
     }
+
+
+@app.get("/api/discover")
+async def discover_filesystem():
+    """
+    Discover all directories with write access by scanning the entire runtime system.
+    
+    This endpoint:
+    - Scans common mount points (/Volumes/, /dbfs/, /Workspace/, /tmp/, etc.)
+    - Tests read/write access on each directory
+    - Checks /proc/mounts for mounted filesystems
+    - Lists directory contents where accessible
+    - Returns comprehensive information about accessible paths
+    """
+    results = {
+        "scan_summary": {
+            "total_paths_tested": 0,
+            "readable_paths": 0,
+            "writable_paths": 0,
+            "mount_points_found": 0,
+        },
+        "environment": {
+            "cwd": os.getcwd(),
+            "user": os.getenv("USER", "unknown"),
+            "workspace_dir": os.getenv("WORKSPACE_DIR", "NOT SET"),
+            "pythonpath": os.getenv("PYTHONPATH", "NOT SET"),
+        },
+        "mounts": [],
+        "paths_tested": [],
+        "writable_paths": [],
+        "errors": [],
+    }
+    
+    # Common paths to test
+    common_paths = [
+        "/",
+        "/Volumes",
+        "/Volumes/genesis-data-agents-storage",
+        "/Volumes/genesis-data-agents-storage/default",
+        "/Volumes/genesis-data-agents-storage/default/genesis-app-data",
+        "/dbfs",
+        "/dbfs/mnt",
+        "/Workspace",
+        "/tmp",
+        "/workspace",
+        "/app",
+        "/home",
+        "/opt",
+        "/usr",
+        "/var",
+        os.getcwd(),
+        os.getenv("WORKSPACE_DIR", ""),
+        os.getenv("HOME", ""),
+        tempfile.gettempdir(),
+    ]
+    
+    # Remove empty paths
+    common_paths = [p for p in common_paths if p]
+    
+    # Read /proc/mounts if accessible
+    try:
+        with open("/proc/mounts", "r") as f:
+            mounts = f.readlines()
+            results["scan_summary"]["mount_points_found"] = len(mounts)
+            for line in mounts:
+                parts = line.split()
+                if len(parts) >= 2:
+                    mount_point = parts[1]
+                    filesystem = parts[0]
+                    if mount_point not in common_paths:
+                        common_paths.append(mount_point)
+                    results["mounts"].append({
+                        "device": filesystem,
+                        "mount_point": mount_point,
+                        "filesystem": parts[2] if len(parts) > 2 else "unknown",
+                    })
+    except (PermissionError, FileNotFoundError, OSError) as e:
+        results["errors"].append(f"Could not read /proc/mounts: {str(e)}")
+    
+    # Test each path
+    tested_paths = set()
+    
+    def test_path(path_str: str, depth: int = 0, max_depth: int = 3) -> Dict[str, Any]:
+        """Test a path for read/write access and return information."""
+        if depth > max_depth or path_str in tested_paths:
+            return None
+        
+        tested_paths.add(path_str)
+        results["scan_summary"]["total_paths_tested"] += 1
+        
+        path_info = {
+            "path": path_str,
+            "exists": False,
+            "is_directory": False,
+            "is_file": False,
+            "readable": False,
+            "writable": False,
+            "executable": False,
+            "error": None,
+            "children": [],
+            "stat_info": None,
+        }
+        
+        try:
+            path = Path(path_str)
+            path_info["exists"] = path.exists()
+            
+            if not path_info["exists"]:
+                return path_info
+            
+            path_info["is_directory"] = path.is_dir()
+            path_info["is_file"] = path.is_file()
+            
+            # Test permissions
+            path_info["readable"] = os.access(path_str, os.R_OK)
+            path_info["writable"] = os.access(path_str, os.W_OK)
+            path_info["executable"] = os.access(path_str, os.X_OK)
+            
+            # Get stat info
+            try:
+                stat_info = path.stat()
+                path_info["stat_info"] = {
+                    "size": stat_info.st_size if path.is_file() else None,
+                    "mode": oct(stat_info.st_mode),
+                    "uid": stat_info.st_uid,
+                    "gid": stat_info.st_gid,
+                }
+            except Exception as e:
+                path_info["error"] = f"Could not stat: {str(e)}"
+            
+            # Test write access by attempting to create a test file
+            if path_info["writable"] and path_info["is_directory"]:
+                test_file = path / ".databricks_app_test_write"
+                try:
+                    test_file.write_text("test")
+                    test_file.unlink()
+                    path_info["writable"] = True
+                except Exception as e:
+                    path_info["writable"] = False
+                    path_info["error"] = f"Write test failed: {str(e)}"
+            
+            # List children if directory and readable
+            if path_info["is_directory"] and path_info["readable"] and depth < max_depth:
+                try:
+                    children = []
+                    for child in path.iterdir():
+                        child_str = str(child)
+                        # Limit children listing to avoid huge responses
+                        if len(children) < 50:
+                            children.append({
+                                "name": child.name,
+                                "path": child_str,
+                                "is_dir": child.is_dir(),
+                                "is_file": child.is_file(),
+                            })
+                        else:
+                            children.append({
+                                "name": "... (truncated, more than 50 items)",
+                                "path": None,
+                            })
+                            break
+                    path_info["children"] = children
+                except PermissionError:
+                    path_info["error"] = "Permission denied listing children"
+                except Exception as e:
+                    path_info["error"] = f"Error listing children: {str(e)}"
+            
+            # Track readable/writable paths
+            if path_info["readable"]:
+                results["scan_summary"]["readable_paths"] += 1
+            if path_info["writable"]:
+                results["scan_summary"]["writable_paths"] += 1
+                results["writable_paths"].append({
+                    "path": path_str,
+                    "is_directory": path_info["is_directory"],
+                    "is_file": path_info["is_file"],
+                })
+            
+        except Exception as e:
+            path_info["error"] = str(e)
+            results["errors"].append(f"Error testing {path_str}: {str(e)}")
+        
+        return path_info
+    
+    # Test all common paths
+    for path_str in common_paths:
+        path_info = test_path(path_str)
+        if path_info:
+            results["paths_tested"].append(path_info)
+            
+            # If it's a directory, also test some subdirectories
+            if path_info["is_directory"] and path_info["readable"]:
+                try:
+                    path = Path(path_str)
+                    for child in path.iterdir():
+                        if child.is_dir() and len(results["paths_tested"]) < 200:  # Limit total paths
+                            child_info = test_path(str(child), depth=1)
+                            if child_info:
+                                results["paths_tested"].append(child_info)
+                except Exception:
+                    pass
+    
+    # Sort writable paths by path length (shorter = likely more important)
+    results["writable_paths"].sort(key=lambda x: len(x["path"]))
+    
+    return results
 
 
 @app.get("/api/read/{filename:path}")
@@ -271,12 +503,13 @@ async def read_file(filename: str):
         filename: Relative path to file within /workspace/files
     """
     try:
+        files_dir = get_files_dir()
         # Sanitize filename to prevent directory traversal
-        file_path = FILES_DIR / filename
+        file_path = files_dir / filename
         file_path = file_path.resolve()
         
         # Ensure the resolved path is still within FILES_DIR
-        if not str(file_path).startswith(str(FILES_DIR.resolve())):
+        if not str(file_path).startswith(str(files_dir.resolve())):
             raise HTTPException(status_code=400, detail="Invalid file path")
         
         if not file_path.exists():
@@ -305,25 +538,30 @@ async def read_file(filename: str):
 @app.post("/api/write/{filename:path}")
 async def write_file(filename: str, content: dict):
     """
-    Write content to a file in the files directory.
+    Write content to a file directly in WORKSPACE_DIR.
     
     Args:
-        filename: Relative path to file within /workspace/files
+        filename: Filename to write (will be written directly to WORKSPACE_DIR)
         content: JSON object with 'content' key containing file content
     """
     try:
-        # Sanitize filename to prevent directory traversal
-        file_path = FILES_DIR / filename
+        base_dir = get_base_dir()
+        
+        # Sanitize filename - use only the basename to prevent directory traversal
+        # Remove any path separators and use only the filename
+        safe_filename = os.path.basename(filename)
+        if not safe_filename or safe_filename in ('.', '..'):
+            raise HTTPException(status_code=400, detail="Invalid filename")
+        
+        # Write directly to WORKSPACE_DIR
+        file_path = base_dir / safe_filename
         file_path = file_path.resolve()
         
-        # Ensure the resolved path is still within FILES_DIR
-        if not str(file_path).startswith(str(FILES_DIR.resolve())):
+        # Ensure the resolved path is still within BASE_DIR
+        if not str(file_path).startswith(str(base_dir.resolve())):
             raise HTTPException(status_code=400, detail="Invalid file path")
         
-        # Ensure parent directory exists
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Write content
+        # Write content directly (no subdirectory creation)
         file_content = content.get("content", "")
         file_path.write_text(file_content, encoding='utf-8')
         
@@ -331,10 +569,10 @@ async def write_file(filename: str, content: dict):
         
         return {
             "success": True,
-            "filename": filename,
+            "filename": safe_filename,
             "path": str(file_path),
             "size": stat.st_size,
-            "message": f"File written successfully: {filename}",
+            "message": f"File written successfully: {safe_filename}",
         }
     except HTTPException:
         raise
@@ -344,29 +582,41 @@ async def write_file(filename: str, content: dict):
 
 @app.get("/api/list")
 async def list_files():
-    """List all files in the files directory."""
+    """List all files directly in WORKSPACE_DIR."""
     try:
-        files = []
-        if FILES_DIR.exists():
-            for item in FILES_DIR.rglob("*"):
-                if item.is_file():
-                    stat = item.stat()
-                    rel_path = item.relative_to(FILES_DIR)
-                    files.append({
-                        "name": str(rel_path),
-                        "path": str(item),
-                        "size": stat.st_size,
-                        "modified": stat.st_mtime,
-                    })
+        base_dir = get_base_dir()
+        base_dir_str = str(base_dir)
+        
+        # Debug info
+        debug_info = {
+            "WORKSPACE_DIR_env": os.getenv("WORKSPACE_DIR"),
+            "base_dir_str": base_dir_str,
+            "os.path.exists": os.path.exists(base_dir_str),
+            "os.access_R_OK": os.access(base_dir_str, os.R_OK),
+            "os.access_W_OK": os.access(base_dir_str, os.W_OK),
+            "cwd": os.getcwd(),
+        }
+        
+        # Try to list with error details
+        try:
+            result = os.listdir(base_dir_str)
+            debug_info["listdir_success"] = True
+            debug_info["listdir_result"] = result
+        except Exception as e:
+            debug_info["listdir_error"] = str(e)
+            debug_info["listdir_error_type"] = type(e).__name__
         
         return {
-            "success": True,
-            "files_dir": str(FILES_DIR),
-            "count": len(files),
-            "files": files,
+            "debug": debug_info,
+            "workspace_dir": base_dir_str,
         }
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error listing files: {str(e)}")
+        return {
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "WORKSPACE_DIR": os.getenv("WORKSPACE_DIR"),
+        }
 
 
 @app.delete("/api/delete/{filename:path}")
@@ -378,12 +628,13 @@ async def delete_file(filename: str):
         filename: Relative path to file within /workspace/files
     """
     try:
+        files_dir = get_files_dir()
         # Sanitize filename to prevent directory traversal
-        file_path = FILES_DIR / filename
+        file_path = files_dir / filename
         file_path = file_path.resolve()
         
         # Ensure the resolved path is still within FILES_DIR
-        if not str(file_path).startswith(str(FILES_DIR.resolve())):
+        if not str(file_path).startswith(str(files_dir.resolve())):
             raise HTTPException(status_code=400, detail="Invalid file path")
         
         if not file_path.exists():

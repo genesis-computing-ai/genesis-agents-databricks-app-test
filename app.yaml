@@ -17,7 +17,7 @@ env:
   
   # Workspace directory (Databricks Apps provides this)
   - name: WORKSPACE_DIR
-    value: "/Workspace/.bundle/genesis/volumes/volume"
+    valueFrom: volume
   
   # Port (Databricks Apps provides this via PORT environment variable)
   - name: PORT
