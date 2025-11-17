@@ -13,11 +13,13 @@ import os
 import json
 import stat
 import tempfile
+import io
 from pathlib import Path
 from typing import Optional, Dict, List, Any
-from fastapi import FastAPI, HTTPException, Form, File, UploadFile
+from fastapi import FastAPI, HTTPException, Form, File, UploadFile, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from databricks.sdk import WorkspaceClient
 
 app = FastAPI(title="Databricks File Access Test", version="1.0.0")
 
@@ -165,6 +167,37 @@ Timestamp: </textarea>
                 <button onclick="deleteFile()">Delete File</button>
                 <div id="delete-result" class="result" style="display:none;"></div>
             </div>
+            
+            <div class="section">
+                <h2>Read File using Databricks SDK</h2>
+                <p>Read a file from Unity Catalog volume using Databricks SDK.</p>
+                <label for="sdk-read-path">Volume Path (e.g., /Volumes/catalog/schema/volume/path/file.txt):</label>
+                <input type="text" id="sdk-read-path" placeholder="/Volumes/catalog/schema/volume/file.txt" value="/Volumes/catalog/schema/volume/file.txt">
+                <button onclick="readFileSDK()">Read File (SDK)</button>
+                <div id="sdk-read-result" class="result" style="display:none;"></div>
+            </div>
+            
+            <div class="section">
+                <h2>Write File using Databricks SDK</h2>
+                <p>Write a file to Unity Catalog volume using Databricks SDK.</p>
+                <label for="sdk-write-path">Volume Path (e.g., /Volumes/catalog/schema/volume/path/file.txt):</label>
+                <input type="text" id="sdk-write-path" placeholder="/Volumes/catalog/schema/volume/file.txt" value="/Volumes/catalog/schema/volume/file.txt">
+                <label for="sdk-write-content">Content:</label>
+                <textarea id="sdk-write-content" rows="5" placeholder="Enter file content here...">Hello from Databricks Apps SDK!
+This is a test file write operation using the Databricks SDK.
+Timestamp: </textarea>
+                <button onclick="writeFileSDK()">Write File (SDK)</button>
+                <div id="sdk-write-result" class="result" style="display:none;"></div>
+            </div>
+            
+            <div class="section">
+                <h2>List Files using Databricks SDK</h2>
+                <p>List files in Unity Catalog volume directory using Databricks SDK.</p>
+                <label for="sdk-list-path">Volume Directory Path (e.g., /Volumes/catalog/schema/volume/path/):</label>
+                <input type="text" id="sdk-list-path" placeholder="/Volumes/catalog/schema/volume/" value="/Volumes/catalog/schema/volume/">
+                <button onclick="listFilesSDK()">List Files (SDK)</button>
+                <div id="sdk-list-result" class="result" style="display:none;"></div>
+            </div>
         </div>
         
         <script>
@@ -245,6 +278,44 @@ Timestamp: </textarea>
                     showResult('delete-result', data, !response.ok);
                 } catch (err) {
                     showResult('delete-result', 'Error: ' + err.message, true);
+                }
+            }
+            
+            async function readFileSDK() {
+                const volumePath = document.getElementById('sdk-read-path').value;
+                try {
+                    const response = await fetch(`/api/sdk/read/${encodeURIComponent(volumePath)}`);
+                    const data = await response.json();
+                    showResult('sdk-read-result', data, !response.ok);
+                } catch (err) {
+                    showResult('sdk-read-result', 'Error: ' + err.message, true);
+                }
+            }
+            
+            async function writeFileSDK() {
+                const volumePath = document.getElementById('sdk-write-path').value;
+                const content = document.getElementById('sdk-write-content').value;
+                try {
+                    const response = await fetch('/api/sdk/write', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({volume_path: volumePath, content: content})
+                    });
+                    const data = await response.json();
+                    showResult('sdk-write-result', data, !response.ok);
+                } catch (err) {
+                    showResult('sdk-write-result', 'Error: ' + err.message, true);
+                }
+            }
+            
+            async function listFilesSDK() {
+                const volumePath = document.getElementById('sdk-list-path').value;
+                try {
+                    const response = await fetch(`/api/sdk/list/${encodeURIComponent(volumePath)}`);
+                    const data = await response.json();
+                    showResult('sdk-list-result', data, !response.ok);
+                } catch (err) {
+                    showResult('sdk-list-result', 'Error: ' + err.message, true);
                 }
             }
         </script>
@@ -654,6 +725,184 @@ async def delete_file(filename: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting file: {str(e)}")
+
+
+def get_workspace_client() -> WorkspaceClient:
+    """Get Databricks WorkspaceClient instance (credentials auto-injected in Apps)."""
+    return WorkspaceClient()
+
+
+@app.post("/api/sdk/write")
+async def write_file_sdk(request: Request):
+    """
+    Write a file to Unity Catalog volume using Databricks SDK.
+    
+    Request body should contain:
+    - volume_path: Full path to file in Unity Catalog volume (e.g., /Volumes/catalog/schema/volume/path/file.txt)
+    - content: File content as string
+    """
+    try:
+        # Parse JSON body
+        body = await request.json()
+        volume_path = body.get("volume_path", "")
+        file_content = body.get("content", "")
+        
+        if not volume_path:
+            raise HTTPException(
+                status_code=400,
+                detail="volume_path is required in request body"
+            )
+        
+        # Normalize path
+        if not volume_path.startswith("/"):
+            volume_path = "/" + volume_path
+        
+        # Ensure volume_path starts with /Volumes/
+        if not volume_path.startswith("/Volumes/"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Volume path must start with /Volumes/. Received: {volume_path}"
+            )
+        
+        w = get_workspace_client()
+        
+        # Convert string content to BytesIO
+        data = io.BytesIO(file_content.encode('utf-8'))
+        
+        # Upload file using SDK
+        w.files.upload(volume_path, data, overwrite=True)
+        
+        return {
+            "success": True,
+            "volume_path": volume_path,
+            "message": f"File written successfully to {volume_path}",
+            "size": len(file_content.encode('utf-8')),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error writing file using SDK: {str(e)}"
+        )
+
+
+@app.get("/api/sdk/read/{volume_path:path}")
+async def read_file_sdk(volume_path: str):
+    """
+    Read a file from Unity Catalog volume using Databricks SDK.
+    
+    Args:
+        volume_path: Full path to file in Unity Catalog volume (e.g., /Volumes/catalog/schema/volume/path/file.txt)
+    """
+    try:
+        # Normalize path - FastAPI path parameters may strip leading /
+        if not volume_path.startswith("/"):
+            volume_path = "/" + volume_path
+        
+        # Ensure volume_path starts with /Volumes/
+        if not volume_path.startswith("/Volumes/"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Volume path must start with /Volumes/. Received: {volume_path}"
+            )
+        
+        w = get_workspace_client()
+        
+        # Download file using SDK
+        response = w.files.download(volume_path)
+        
+        # Read file contents
+        file_content_bytes = response.contents.read()
+        file_content = file_content_bytes.decode('utf-8')
+        
+        return {
+            "success": True,
+            "volume_path": volume_path,
+            "content": file_content,
+            "size": len(file_content_bytes),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = str(e)
+        if "not found" in error_msg.lower() or "404" in error_msg:
+            raise HTTPException(status_code=404, detail=f"File not found: {volume_path}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error reading file using SDK: {str(e)}"
+        )
+
+
+@app.get("/api/sdk/list/{volume_path:path}")
+async def list_files_sdk(volume_path: str):
+    """
+    List files in Unity Catalog volume directory using Databricks SDK.
+    
+    Args:
+        volume_path: Full path to directory in Unity Catalog volume (e.g., /Volumes/catalog/schema/volume/path/)
+    """
+    try:
+        # Normalize path - FastAPI path parameters may strip leading /
+        if not volume_path.startswith("/"):
+            volume_path = "/" + volume_path
+        
+        # Ensure volume_path starts with /Volumes/
+        if not volume_path.startswith("/Volumes/"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Volume path must start with /Volumes/. Received: {volume_path}"
+            )
+        
+        # Ensure path ends with / for directory listing
+        if not volume_path.endswith("/"):
+            volume_path = volume_path + "/"
+        
+        w = get_workspace_client()
+        
+        # List directory contents using Files API
+        r = w.api_client.do(
+            "GET",
+            f"/api/2.0/fs/directories{volume_path}",
+        )
+        
+        entries = r.get("contents", [])
+        
+        files = []
+        directories = []
+        
+        for entry in entries:
+            item_info = {
+                "name": entry.get("name", ""),
+                "path": entry.get("path", ""),
+                "is_directory": entry.get("is_directory", False),
+                "file_size": entry.get("file_size", 0) if not entry.get("is_directory") else None,
+            }
+            
+            if entry.get("is_directory"):
+                directories.append(item_info)
+            else:
+                files.append(item_info)
+        
+        return {
+            "success": True,
+            "volume_path": volume_path,
+            "total_items": len(entries),
+            "files_count": len(files),
+            "directories_count": len(directories),
+            "files": files,
+            "directories": directories,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = str(e)
+        if "not found" in error_msg.lower() or "404" in error_msg:
+            raise HTTPException(status_code=404, detail=f"Directory not found: {volume_path}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error listing files using SDK: {str(e)}"
+        )
 
 
 if __name__ == "__main__":
