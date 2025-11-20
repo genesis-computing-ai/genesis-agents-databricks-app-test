@@ -15,7 +15,23 @@ config = context.config
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
-# Set disable_existing_loggers=False to prevent conflicts with application logging
+#
+# FIXED: Logger Configuration Issue
+# =================================
+# Previous behavior (POTENTIAL ISSUE):
+# - Used fileConfig(config.config_file_name) without disable_existing_loggers parameter
+# - This defaults to True, which disables all existing loggers
+#
+# Why this could cause hangs:
+# - When Alembic disables existing loggers (especially application loggers), it can
+#   interfere with FastAPI's logging setup and cause deadlocks or hangs during
+#   migration execution, particularly when migrations run during application startup
+# - Logger conflicts can prevent proper cleanup and transaction finalization
+#
+# Current solution (FIXED):
+# - Set disable_existing_loggers=False to preserve existing loggers
+# - This allows Alembic's logging to coexist with the application's logging system
+# - Prevents logger conflicts that could interfere with migration completion
 if config.config_file_name is not None:
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
