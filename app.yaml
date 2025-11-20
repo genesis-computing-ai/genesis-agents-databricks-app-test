@@ -26,3 +26,7 @@ env:
   # Host binding
   - name: HOST
     value: "0.0.0.0"
+  
+  # OpenAI API Key from secret
+  - name: OPENAI_API_KEY
+    valueFrom: OPENAI_API_KEY

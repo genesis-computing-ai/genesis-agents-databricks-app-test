@@ -123,6 +123,11 @@ async def root():
             <h1>Databricks File Access Test Application</h1>
             
             <div class="section">
+                <h2>OpenAI API Key</h2>
+                <div id="openai-key-display" class="result info">Loading...</div>
+            </div>
+            
+            <div class="section">
                 <h2>Filesystem Discovery</h2>
                 <p>Discover all directories with write access on the runtime system.</p>
                 <button onclick="discoverFilesystem()">Discover Writable Directories</button>
@@ -207,10 +212,27 @@ Timestamp: </textarea>
                     .then(r => r.json())
                     .then(data => {
                         document.getElementById('env-info').textContent = JSON.stringify(data, null, 2);
+                        
+                        // Display OpenAI API Key
+                        const openaiKey = data.openai_api_key || 'NOT SET';
+                        const keyDisplay = document.getElementById('openai-key-display');
+                        if (openaiKey === 'NOT SET') {
+                            keyDisplay.textContent = 'OPENAI_API_KEY: NOT SET';
+                            keyDisplay.className = 'result error';
+                        } else {
+                            // Show first 8 and last 4 characters for security
+                            const maskedKey = openaiKey.length > 12 
+                                ? openaiKey.substring(0, 8) + '...' + openaiKey.substring(openaiKey.length - 4)
+                                : '***';
+                            keyDisplay.textContent = `OPENAI_API_KEY: ${maskedKey} (${openaiKey.length} characters)`;
+                            keyDisplay.className = 'result success';
+                        }
                     })
                     .catch(err => {
                         document.getElementById('env-info').textContent = 'Error: ' + err.message;
                         document.getElementById('env-info').className = 'result error';
+                        document.getElementById('openai-key-display').textContent = 'Error loading API key: ' + err.message;
+                        document.getElementById('openai-key-display').className = 'result error';
                     });
             };
             
@@ -346,6 +368,7 @@ async def get_env():
     """Get environment information for debugging."""
     base_dir = get_base_dir()
     files_dir = get_files_dir()
+    openai_key = os.getenv("OPENAI_API_KEY", "NOT SET")
     return {
         "workspace_dir": os.getenv("WORKSPACE_DIR", "NOT SET"),
         "base_dir": str(base_dir),
@@ -356,6 +379,7 @@ async def get_env():
         "user": os.getenv("USER", "NOT SET"),
         "base_dir_exists": base_dir.exists(),
         "files_dir_exists": files_dir.exists(),
+        "openai_api_key": openai_key,
     }
 
 
