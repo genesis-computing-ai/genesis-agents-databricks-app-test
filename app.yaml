@@ -30,3 +30,11 @@ env:
   # OpenAI API Key from secret
   - name: OPENAI_API_KEY
     valueFrom: OPENAI_API_KEY
+
+# Database configuration for PostgreSQL/Lakebase
+database:
+  host: "instance-3af3a681-723d-4026-b9d0-2a29fc754893.database.cloud.databricks.com"
+  port: 5432
+  database: "databricks_postgres"
+  user: "dev_user"
+  password: "test12345"  # Consider using a secret in production

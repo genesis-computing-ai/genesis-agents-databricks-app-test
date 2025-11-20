@@ -7,6 +7,7 @@ This app provides:
 - Simple HTML UI for testing
 - Health check endpoint
 - Filesystem discovery endpoint for finding writable directories
+- TODO application with PostgreSQL backend
 """
 
 import os
@@ -14,14 +15,61 @@ import json
 import stat
 import tempfile
 import io
+import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional, Dict, List, Any
-from fastapi import FastAPI, HTTPException, Form, File, UploadFile, Request
+from fastapi import FastAPI, HTTPException, Form, File, UploadFile, Request, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from databricks.sdk import WorkspaceClient
+from db_init import init_database
+from todo_repository import (
+    create_todo,
+    get_todo,
+    list_todos,
+    update_todo,
+    delete_todo,
+    test_select_one,
+)
+from todo_models import TodoCreate, TodoUpdate, TodoResponse
+from timing_utils import TimingInfo
+from sqlalchemy.exc import SQLAlchemyError
+import time
 
-app = FastAPI(title="Databricks File Access Test", version="1.0.0")
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup and shutdown events."""
+    # Startup
+    try:
+        await init_database()
+        logger.info("Application startup complete")
+    except Exception as e:
+        logger.error(f"Failed to initialize database on startup: {e}")
+        # Don't raise - allow app to start even if DB init fails
+        # (will fail when endpoints are called)
+    
+    yield
+    
+    # Shutdown - cleanup async engine
+    try:
+        from db_connection import close_async_engine
+        await close_async_engine()
+        logger.info("Database connections closed")
+    except Exception as e:
+        logger.error(f"Error closing database connections: {e}")
+
+
+app = FastAPI(
+    title="Databricks File Access Test",
+    version="1.0.0",
+    lifespan=lifespan
+)
 
 # Base directory for file operations (lazy initialization - not accessed at startup)
 # In Databricks Apps, this will be the workspace directory
@@ -121,6 +169,7 @@ async def root():
     <body>
         <div class="container">
             <h1>Databricks File Access Test Application</h1>
+            <p><a href="/todos" style="color: #0066cc; text-decoration: none; font-weight: bold;">→ Go to TODO Application</a></p>
             
             <div class="section">
                 <h2>OpenAI API Key</h2>
@@ -927,6 +976,608 @@ async def list_files_sdk(volume_path: str):
             status_code=500,
             detail=f"Error listing files using SDK: {str(e)}"
         )
+
+
+# ============================================================================
+# TODO Application Endpoints
+# ============================================================================
+
+@app.get("/todos", response_class=HTMLResponse)
+async def todos_page():
+    """HTML page for TODO management."""
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>TODO Application</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                max-width: 1000px;
+                margin: 50px auto;
+                padding: 20px;
+                background-color: #f5f5f5;
+            }
+            .container {
+                background: white;
+                padding: 30px;
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            }
+            h1 {
+                color: #333;
+                border-bottom: 2px solid #0066cc;
+                padding-bottom: 10px;
+            }
+            .nav-link {
+                color: #0066cc;
+                text-decoration: none;
+                font-weight: bold;
+                margin-bottom: 20px;
+                display: inline-block;
+            }
+            .nav-link:hover {
+                text-decoration: underline;
+            }
+            .section {
+                margin: 30px 0;
+                padding: 20px;
+                background-color: #f9f9f9;
+                border-radius: 5px;
+            }
+            .form-group {
+                margin-bottom: 15px;
+            }
+            label {
+                display: block;
+                margin-bottom: 5px;
+                font-weight: bold;
+                color: #555;
+            }
+            input[type="text"], textarea, select, input[type="datetime-local"] {
+                width: 100%;
+                padding: 8px;
+                margin-bottom: 10px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                box-sizing: border-box;
+            }
+            button {
+                background-color: #0066cc;
+                color: white;
+                padding: 10px 20px;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 14px;
+                margin-right: 10px;
+            }
+            button:hover {
+                background-color: #0052a3;
+            }
+            button.delete {
+                background-color: #dc3545;
+            }
+            button.delete:hover {
+                background-color: #c82333;
+            }
+            button.edit {
+                background-color: #28a745;
+            }
+            button.edit:hover {
+                background-color: #218838;
+            }
+            .todo-item {
+                background: white;
+                padding: 15px;
+                margin: 10px 0;
+                border-radius: 5px;
+                border-left: 4px solid #0066cc;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            }
+            .todo-item.completed {
+                opacity: 0.6;
+                border-left-color: #28a745;
+            }
+            .todo-item h3 {
+                margin: 0 0 10px 0;
+                color: #333;
+            }
+            .todo-item p {
+                margin: 5px 0;
+                color: #666;
+            }
+            .todo-meta {
+                font-size: 12px;
+                color: #999;
+                margin-top: 10px;
+            }
+            .priority {
+                display: inline-block;
+                padding: 2px 8px;
+                border-radius: 3px;
+                font-size: 11px;
+                font-weight: bold;
+                margin-right: 5px;
+            }
+            .priority-0 { background-color: #dc3545; color: white; }
+            .priority-1 { background-color: #fd7e14; color: white; }
+            .priority-2 { background-color: #ffc107; color: black; }
+            .priority-3 { background-color: #17a2b8; color: white; }
+            .priority-4 { background-color: #6c757d; color: white; }
+            .filters {
+                display: flex;
+                gap: 15px;
+                margin-bottom: 20px;
+            }
+            .filters select {
+                flex: 1;
+            }
+            .error {
+                background-color: #f8d7da;
+                border: 1px solid #f5c6cb;
+                color: #721c24;
+                padding: 10px;
+                border-radius: 4px;
+                margin: 10px 0;
+            }
+            .success {
+                background-color: #d4edda;
+                border: 1px solid #c3e6cb;
+                color: #155724;
+                padding: 10px;
+                border-radius: 4px;
+                margin: 10px 0;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>TODO Application</h1>
+            <a href="/" class="nav-link">← Back to File Operations</a>
+            
+            <div class="section">
+                <h2>Create New TODO</h2>
+                <form id="create-form">
+                    <div class="form-group">
+                        <label for="title">Title *</label>
+                        <input type="text" id="title" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="description">Description</label>
+                        <textarea id="description" rows="3"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="priority">Priority</label>
+                        <select id="priority">
+                            <option value="0">Critical</option>
+                            <option value="1">High</option>
+                            <option value="2" selected>Medium</option>
+                            <option value="3">Low</option>
+                            <option value="4">Backlog</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="due-date">Due Date</label>
+                        <input type="datetime-local" id="due-date">
+                    </div>
+                    <button type="submit">Create TODO</button>
+                </form>
+                <div id="create-message"></div>
+            </div>
+            
+            <div class="section">
+                <h2>Filters</h2>
+                <div class="filters">
+                    <select id="filter-completed">
+                        <option value="">All Status</option>
+                        <option value="false">Not Completed</option>
+                        <option value="true">Completed</option>
+                    </select>
+                    <select id="filter-priority">
+                        <option value="">All Priorities</option>
+                        <option value="0">Critical</option>
+                        <option value="1">High</option>
+                        <option value="2">Medium</option>
+                        <option value="3">Low</option>
+                        <option value="4">Backlog</option>
+                    </select>
+                    <button onclick="loadTodos()">Apply Filters</button>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h2>TODO List</h2>
+                <div id="todo-list">Loading...</div>
+            </div>
+        </div>
+        
+        <script>
+            // Load TODOs on page load
+            window.onload = function() {
+                loadTodos();
+            };
+            
+            // Create TODO form handler
+            document.getElementById('create-form').addEventListener('submit', async function(e) {
+                e.preventDefault();
+                const title = document.getElementById('title').value;
+                const description = document.getElementById('description').value;
+                const priority = parseInt(document.getElementById('priority').value);
+                const dueDate = document.getElementById('due-date').value;
+                
+                const todoData = {
+                    title: title,
+                    description: description || null,
+                    priority: priority,
+                    due_date: dueDate || null
+                };
+                
+                try {
+                    const response = await fetch('/api/todo', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(todoData)
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        showMessage('create-message', 'TODO created successfully!', true);
+                        document.getElementById('create-form').reset();
+                        loadTodos();
+                    } else {
+                        showMessage('create-message', 'Error: ' + (data.detail || 'Failed to create TODO'), false);
+                    }
+                } catch (err) {
+                    showMessage('create-message', 'Error: ' + err.message, false);
+                }
+            });
+            
+            async function loadTodos() {
+                const completedFilter = document.getElementById('filter-completed').value;
+                const priorityFilter = document.getElementById('filter-priority').value;
+                
+                let url = '/api/todo';
+                const params = new URLSearchParams();
+                if (completedFilter !== '') {
+                    params.append('completed', completedFilter);
+                }
+                if (priorityFilter !== '') {
+                    params.append('priority', priorityFilter);
+                }
+                if (params.toString()) {
+                    url += '?' + params.toString();
+                }
+                
+                try {
+                    const response = await fetch(url);
+                    const todos = await response.json();
+                    
+                    const todoList = document.getElementById('todo-list');
+                    if (todos.length === 0) {
+                        todoList.innerHTML = '<p>No TODOs found.</p>';
+                        return;
+                    }
+                    
+                    todoList.innerHTML = todos.map(todo => {
+                        const dueDate = todo.due_date ? new Date(todo.due_date).toLocaleString() : 'No due date';
+                        const createdDate = new Date(todo.created_at).toLocaleString();
+                        const priorityLabels = ['Critical', 'High', 'Medium', 'Low', 'Backlog'];
+                        const priorityClass = `priority-${todo.priority}`;
+                        
+                        return `
+                            <div class="todo-item ${todo.completed ? 'completed' : ''}" id="todo-${todo.id}">
+                                <h3>${escapeHtml(todo.title)} ${todo.completed ? '✓' : ''}</h3>
+                                ${todo.description ? '<p>' + escapeHtml(todo.description) + '</p>' : ''}
+                                <div class="todo-meta">
+                                    <span class="priority ${priorityClass}">${priorityLabels[todo.priority]}</span>
+                                    <span>Due: ${dueDate}</span>
+                                    <span style="margin-left: 15px;">Created: ${createdDate}</span>
+                                </div>
+                                <div style="margin-top: 10px;">
+                                    <button onclick="toggleComplete(${todo.id}, ${!todo.completed})">
+                                        ${todo.completed ? 'Mark Incomplete' : 'Mark Complete'}
+                                    </button>
+                                    <button class="edit" onclick="editTodo(${todo.id})">Edit</button>
+                                    <button class="delete" onclick="deleteTodo(${todo.id})">Delete</button>
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+                } catch (err) {
+                    document.getElementById('todo-list').innerHTML = '<div class="error">Error loading TODOs: ' + err.message + '</div>';
+                }
+            }
+            
+            async function toggleComplete(todoId, completed) {
+                try {
+                    const response = await fetch(`/api/todo/${todoId}`, {
+                        method: 'PUT',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({completed: completed})
+                    });
+                    
+                    if (response.ok) {
+                        loadTodos();
+                    } else {
+                        const data = await response.json();
+                        alert('Error: ' + (data.detail || 'Failed to update TODO'));
+                    }
+                } catch (err) {
+                    alert('Error: ' + err.message);
+                }
+            }
+            
+            async function editTodo(todoId) {
+                const title = prompt('Enter new title:');
+                if (title === null) return;
+                
+                const description = prompt('Enter new description (or leave empty):');
+                const priority = prompt('Enter priority (0-4):');
+                const dueDate = prompt('Enter due date (YYYY-MM-DDTHH:mm or leave empty):');
+                
+                const updateData = {
+                    title: title,
+                    description: description || null,
+                };
+                
+                if (priority !== null && priority !== '') {
+                    updateData.priority = parseInt(priority);
+                }
+                
+                if (dueDate !== null && dueDate !== '') {
+                    updateData.due_date = dueDate;
+                }
+                
+                try {
+                    const response = await fetch(`/api/todo/${todoId}`, {
+                        method: 'PUT',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(updateData)
+                    });
+                    
+                    if (response.ok) {
+                        loadTodos();
+                    } else {
+                        const data = await response.json();
+                        alert('Error: ' + (data.detail || 'Failed to update TODO'));
+                    }
+                } catch (err) {
+                    alert('Error: ' + err.message);
+                }
+            }
+            
+            async function deleteTodo(todoId) {
+                if (!confirm('Are you sure you want to delete this TODO?')) {
+                    return;
+                }
+                
+                try {
+                    const response = await fetch(`/api/todo/${todoId}`, {
+                        method: 'DELETE'
+                    });
+                    
+                    if (response.ok) {
+                        loadTodos();
+                    } else {
+                        const data = await response.json();
+                        alert('Error: ' + (data.detail || 'Failed to delete TODO'));
+                    }
+                } catch (err) {
+                    alert('Error: ' + err.message);
+                }
+            }
+            
+            function showMessage(elementId, message, isSuccess) {
+                const element = document.getElementById(elementId);
+                element.innerHTML = '<div class="' + (isSuccess ? 'success' : 'error') + '">' + escapeHtml(message) + '</div>';
+                setTimeout(() => {
+                    element.innerHTML = '';
+                }, 5000);
+            }
+            
+            function escapeHtml(text) {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            }
+        </script>
+    </body>
+    </html>
+    """
+    return html_content
+
+
+@app.get("/api/todo", response_model=List[TodoResponse])
+async def list_todos_endpoint(
+    response: Response,
+    completed: Optional[bool] = Query(None, description="Filter by completion status"),
+    priority: Optional[int] = Query(None, ge=0, le=4, description="Filter by priority (0-4)")
+):
+    """List all TODOs with optional filtering."""
+    timing_info = TimingInfo()
+    endpoint_start = time.time()
+    
+    try:
+        todos, timing_info = await list_todos(completed=completed, priority=priority, timing_info=timing_info)
+        
+        # Measure response serialization
+        serialize_start = time.time()
+        response_data = todos
+        timing_info.response_serialization_ms = (time.time() - serialize_start) * 1000
+        
+        timing_info.endpoint_processing_ms = (time.time() - endpoint_start) * 1000
+        timing_info.total_ms = timing_info.endpoint_processing_ms
+        
+        # Set timing headers
+        response.headers["X-Timing"] = timing_info.to_header_string()
+        response.headers["X-Timing-JSON"] = json.dumps(timing_info.to_dict())
+        
+        return response_data
+    except SQLAlchemyError as e:
+        logger.error(f"Database error listing TODOs: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error listing TODOs: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@app.get("/api/todo/{todo_id}", response_model=TodoResponse)
+async def get_todo_endpoint(todo_id: int, response: Response):
+    """Get a single TODO by ID."""
+    timing_info = TimingInfo()
+    endpoint_start = time.time()
+    
+    try:
+        todo, timing_info = await get_todo(todo_id, timing_info=timing_info)
+        if todo is None:
+            raise HTTPException(status_code=404, detail=f"TODO with ID {todo_id} not found")
+        
+        # Measure response serialization
+        serialize_start = time.time()
+        response_data = todo
+        timing_info.response_serialization_ms = (time.time() - serialize_start) * 1000
+        
+        timing_info.endpoint_processing_ms = (time.time() - endpoint_start) * 1000
+        timing_info.total_ms = timing_info.endpoint_processing_ms
+        
+        # Set timing headers
+        response.headers["X-Timing"] = timing_info.to_header_string()
+        response.headers["X-Timing-JSON"] = json.dumps(timing_info.to_dict())
+        
+        return response_data
+    except HTTPException:
+        raise
+    except SQLAlchemyError as e:
+        logger.error(f"Database error getting TODO {todo_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error getting TODO {todo_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@app.post("/api/todo", response_model=TodoResponse, status_code=201)
+async def create_todo_endpoint(todo_data: TodoCreate, response: Response):
+    """Create a new TODO."""
+    timing_info = TimingInfo()
+    endpoint_start = time.time()
+    
+    try:
+        todo, timing_info = await create_todo(todo_data, timing_info=timing_info)
+        
+        # Measure response serialization
+        serialize_start = time.time()
+        response_data = todo
+        timing_info.response_serialization_ms = (time.time() - serialize_start) * 1000
+        
+        timing_info.endpoint_processing_ms = (time.time() - endpoint_start) * 1000
+        timing_info.total_ms = timing_info.endpoint_processing_ms
+        
+        # Set timing headers
+        response.headers["X-Timing"] = timing_info.to_header_string()
+        response.headers["X-Timing-JSON"] = json.dumps(timing_info.to_dict())
+        
+        return response_data
+    except SQLAlchemyError as e:
+        logger.error(f"Database error creating TODO: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error creating TODO: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@app.put("/api/todo/{todo_id}", response_model=TodoResponse)
+async def update_todo_endpoint(todo_id: int, todo_data: TodoUpdate, response: Response):
+    """Update an existing TODO."""
+    timing_info = TimingInfo()
+    endpoint_start = time.time()
+    
+    try:
+        todo, timing_info = await update_todo(todo_id, todo_data, timing_info=timing_info)
+        if todo is None:
+            raise HTTPException(status_code=404, detail=f"TODO with ID {todo_id} not found")
+        
+        # Measure response serialization
+        serialize_start = time.time()
+        response_data = todo
+        timing_info.response_serialization_ms = (time.time() - serialize_start) * 1000
+        
+        timing_info.endpoint_processing_ms = (time.time() - endpoint_start) * 1000
+        timing_info.total_ms = timing_info.endpoint_processing_ms
+        
+        # Set timing headers
+        response.headers["X-Timing"] = timing_info.to_header_string()
+        response.headers["X-Timing-JSON"] = json.dumps(timing_info.to_dict())
+        
+        return response_data
+    except HTTPException:
+        raise
+    except SQLAlchemyError as e:
+        logger.error(f"Database error updating TODO {todo_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error updating TODO {todo_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@app.delete("/api/todo/{todo_id}", status_code=204)
+async def delete_todo_endpoint(todo_id: int, response: Response):
+    """Delete a TODO."""
+    timing_info = TimingInfo()
+    endpoint_start = time.time()
+    
+    try:
+        deleted, timing_info = await delete_todo(todo_id, timing_info=timing_info)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"TODO with ID {todo_id} not found")
+        
+        timing_info.endpoint_processing_ms = (time.time() - endpoint_start) * 1000
+        timing_info.total_ms = timing_info.endpoint_processing_ms
+        
+        # Set timing headers
+        response.headers["X-Timing"] = timing_info.to_header_string()
+        response.headers["X-Timing-JSON"] = json.dumps(timing_info.to_dict())
+        
+        return None
+    except HTTPException:
+        raise
+    except SQLAlchemyError as e:
+        logger.error(f"Database error deleting TODO {todo_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error deleting TODO {todo_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@app.get("/api/test/select-one")
+async def test_select_one_endpoint(response: Response):
+    """Test endpoint that runs SELECT 1 to isolate network/connection overhead."""
+    timing_info = TimingInfo()
+    endpoint_start = time.time()
+    
+    try:
+        result, timing_info = await test_select_one(timing_info=timing_info)
+        
+        # Measure response serialization
+        serialize_start = time.time()
+        response_data = {"result": result}
+        timing_info.response_serialization_ms = (time.time() - serialize_start) * 1000
+        
+        timing_info.endpoint_processing_ms = (time.time() - endpoint_start) * 1000
+        timing_info.total_ms = timing_info.endpoint_processing_ms
+        
+        # Set timing headers
+        response.headers["X-Timing"] = timing_info.to_header_string()
+        response.headers["X-Timing-JSON"] = json.dumps(timing_info.to_dict())
+        
+        return response_data
+    except SQLAlchemyError as e:
+        logger.error(f"Database error in SELECT 1 test: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error in SELECT 1 test: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 if __name__ == "__main__":

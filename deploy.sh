@@ -89,6 +89,14 @@ echo "  - Copying directories (filtering large files)..."
 if [ -d "files" ]; then
     copy_dir_filtered files "$STAGING_DIR"
 fi
+if [ -d "alembic" ]; then
+    copy_dir_filtered alembic "$STAGING_DIR"
+fi
+
+# Copy Alembic config file
+if [ -f "alembic.ini" ]; then
+    cp alembic.ini "$STAGING_DIR/" 2>/dev/null || true
+fi
 
 # Verify no large files or databases were copied
 echo "  - Verifying no large files or databases were copied..."
