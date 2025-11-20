@@ -24,6 +24,7 @@ def _row_to_dict(row) -> Dict[str, Any]:
         "completed": row.completed,
         "priority": row.priority,
         "due_date": row.due_date,
+        "payload": row.payload,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     }
@@ -60,6 +61,7 @@ async def create_todo(todo_data: TodoCreate, timing_info: Optional[TimingInfo] =
                 description=todo_data.description,
                 priority=todo_data.priority,
                 due_date=todo_data.due_date,
+                payload=todo_data.payload,
                 completed=False,
             ).returning(todos_table)
             
@@ -227,6 +229,8 @@ async def update_todo(todo_id: int, todo_data: TodoUpdate, timing_info: Optional
                 update_values["priority"] = todo_data.priority
             if todo_data.due_date is not None:
                 update_values["due_date"] = todo_data.due_date
+            if todo_data.payload is not None:
+                update_values["payload"] = todo_data.payload
             
             # Always update updated_at timestamp
             update_values["updated_at"] = datetime.now(timezone.utc)

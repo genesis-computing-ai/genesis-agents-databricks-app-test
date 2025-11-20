@@ -18,6 +18,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 from dataclasses import dataclass, field
 from collections import defaultdict
+import random
+import string
 
 
 @dataclass
@@ -40,6 +42,112 @@ class TodoAPITester:
         self.results: List[TestResult] = []
         self.created_todo_ids: List[int] = []
         self.lock = threading.Lock()
+    
+    def generate_large_payload(self, min_size_kb: int = 3) -> Dict[str, Any]:
+        """
+        Generate a sizable JSON payload (at least a few pages long).
+        Target size: at least min_size_kb KB of JSON data.
+        """
+        # Generate a payload with nested structures, arrays, and text content
+        # to ensure it's at least a few pages long (roughly 2-4KB)
+        payload = {
+            "metadata": {
+                "version": "1.0",
+                "created_by": "performance_test",
+                "timestamp": datetime.now().isoformat(),
+                "test_id": ''.join(random.choices(string.ascii_letters + string.digits, k=16)),
+            },
+            "content": {
+                "sections": []
+            },
+            "attachments": [],
+            "tags": [],
+            "notes": []
+        }
+        
+        # Add multiple sections with substantial text content
+        # Each section will have ~500-800 bytes of text
+        for i in range(10):
+            section_text = ''.join(random.choices(
+                string.ascii_letters + string.digits + ' \n',
+                k=random.randint(500, 800)
+            ))
+            payload["content"]["sections"].append({
+                "id": i,
+                "title": f"Section {i}",
+                "content": section_text,
+                "metadata": {
+                    "order": i,
+                    "type": random.choice(["text", "code", "markdown", "html"]),
+                    "formatting": {
+                        "bold": random.choice([True, False]),
+                        "italic": random.choice([True, False]),
+                        "color": random.choice(["black", "blue", "red", "green"]),
+                    }
+                }
+            })
+        
+        # Add attachments metadata
+        for i in range(5):
+            payload["attachments"].append({
+                "id": i,
+                "filename": f"attachment_{i}.pdf",
+                "size": random.randint(100000, 5000000),
+                "mime_type": random.choice(["application/pdf", "image/png", "image/jpeg", "text/plain"]),
+                "url": f"https://example.com/files/attachment_{i}",
+                "uploaded_at": datetime.now().isoformat(),
+            })
+        
+        # Add tags
+        for i in range(15):
+            payload["tags"].append({
+                "name": f"tag_{i}",
+                "color": f"#{''.join(random.choices('0123456789ABCDEF', k=6))}",
+                "category": random.choice(["priority", "status", "project", "custom"]),
+            })
+        
+        # Add notes with substantial content
+        for i in range(8):
+            note_text = ''.join(random.choices(
+                string.ascii_letters + string.digits + ' \n\t',
+                k=random.randint(300, 600)
+            ))
+            payload["notes"].append({
+                "id": i,
+                "content": note_text,
+                "author": f"user_{i % 5}",
+                "created_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat(),
+            })
+        
+        # Add additional nested data
+        payload["analytics"] = {
+            "views": random.randint(0, 10000),
+            "edits": random.randint(0, 5000),
+            "shares": random.randint(0, 1000),
+            "events": [
+                {
+                    "type": random.choice(["view", "edit", "share", "comment"]),
+                    "timestamp": datetime.now().isoformat(),
+                    "user": f"user_{random.randint(0, 10)}",
+                }
+                for _ in range(20)
+            ]
+        }
+        
+        # Verify the payload is at least the minimum size
+        payload_json = json.dumps(payload)
+        payload_size_kb = len(payload_json.encode('utf-8')) / 1024
+        
+        # If payload is too small, add more content
+        if payload_size_kb < min_size_kb:
+            additional_text = ''.join(random.choices(
+                string.ascii_letters + string.digits + ' \n',
+                k=int((min_size_kb - payload_size_kb) * 1024)
+            ))
+            payload["additional_content"] = additional_text
+        
+        return payload
         
     def log_result(self, result: TestResult):
         """Log test result."""
@@ -55,7 +163,7 @@ class TodoAPITester:
     
     async def create_todo(self, session: aiohttp.ClientSession, 
                          title: str, description: str = None, 
-                         priority: int = 2) -> Optional[Dict]:
+                         priority: int = 2, payload: Optional[Dict] = None) -> Optional[Dict]:
         """Create a TODO via API."""
         try:
             data = {
@@ -64,6 +172,8 @@ class TodoAPITester:
             }
             if description:
                 data["description"] = description
+            if payload is not None:
+                data["payload"] = payload
                 
             async with session.post(self.api_base, json=data) as resp:
                 if resp.status == 201:
@@ -134,12 +244,14 @@ class TodoAPITester:
         details = {}
         
         async with aiohttp.ClientSession() as session:
-            # Create
+            # Create with payload
+            payload = self.generate_large_payload(min_size_kb=3)
             todo = await self.create_todo(
                 session, 
                 "Test TODO", 
                 "Basic CRUD test",
-                priority=1
+                priority=1,
+                payload=payload
             )
             if not todo:
                 errors.append("Failed to create TODO")
@@ -148,20 +260,33 @@ class TodoAPITester:
             todo_id = todo["id"]
             details["created_id"] = todo_id
             
+            # Verify payload was saved
+            if not todo.get("payload"):
+                errors.append("Payload not returned in created TODO")
+            else:
+                payload_size_kb = len(json.dumps(todo["payload"]).encode('utf-8')) / 1024
+                details["payload_size_kb"] = f"{payload_size_kb:.2f}"
+            
             # Read
             fetched = await self.get_todo(session, todo_id)
             if not fetched or fetched["id"] != todo_id:
                 errors.append("Failed to fetch created TODO")
+            elif not fetched.get("payload"):
+                errors.append("Payload missing in fetched TODO")
             
-            # Update
+            # Update with new payload
+            updated_payload = self.generate_large_payload(min_size_kb=4)
             updated = await self.update_todo(
                 session, 
                 todo_id, 
                 completed=True,
-                priority=0
+                priority=0,
+                payload=updated_payload
             )
             if not updated or not updated["completed"] or updated["priority"] != 0:
                 errors.append("Failed to update TODO")
+            elif not updated.get("payload"):
+                errors.append("Payload missing in updated TODO")
             
             # List (with filter to avoid fetching all TODOs - just verify our TODO exists)
             todos = await self.list_todos(session, priority=0)  # Filter by priority we just set
@@ -189,24 +314,40 @@ class TodoAPITester:
         start_time = time.time()
         errors = []
         created_count = 0
+        total_payload_size_kb = 0
         
         async with aiohttp.ClientSession() as session:
             tasks = []
             for i in range(count):
+                # Generate a sizable payload for each TODO
+                payload = self.generate_large_payload(min_size_kb=3)
+                payload_size = len(json.dumps(payload).encode('utf-8')) / 1024
+                total_payload_size_kb += payload_size
+                
                 tasks.append(
                     self.create_todo(
                         session,
                         f"Bulk TODO {i}",
                         f"Created in bulk test - {i}",
-                        priority=i % 5
+                        priority=i % 5,
+                        payload=payload
                     )
                 )
             
             results = await asyncio.gather(*tasks, return_exceptions=True)
             created_count = sum(1 for r in results if r is not None and not isinstance(r, Exception))
             
+            # Verify payloads were saved
+            payload_verified = 0
+            for r in results:
+                if r is not None and not isinstance(r, Exception) and r.get("payload"):
+                    payload_verified += 1
+            
             if created_count < count * 0.95:  # Allow 5% failure rate
                 errors.append(f"Only created {created_count}/{count} TODOs")
+            
+            if payload_verified < created_count * 0.95:
+                errors.append(f"Only {payload_verified}/{created_count} TODOs have payloads")
         
         duration = time.time() - start_time
         rate = created_count / duration if duration > 0 else 0
@@ -215,7 +356,9 @@ class TodoAPITester:
             "created": created_count,
             "requested": count,
             "rate_per_sec": f"{rate:.2f}",
-            "avg_time_per_create": f"{duration/count*1000:.2f}ms" if count > 0 else "N/A"
+            "avg_time_per_create": f"{duration/count*1000:.2f}ms" if count > 0 else "N/A",
+            "total_payload_size_mb": f"{total_payload_size_kb/1024:.2f}",
+            "avg_payload_size_kb": f"{total_payload_size_kb/count:.2f}" if count > 0 else "N/A"
         }
         
         return TestResult(
@@ -241,12 +384,14 @@ class TodoAPITester:
             local_conflicts = 0
             
             for todo_id in todo_ids:
-                # Each worker tries to update with its own data
+                # Each worker tries to update with its own data and payload
+                payload = self.generate_large_payload(min_size_kb=3)
                 result = await self.update_todo(
                     session,
                     todo_id,
                     title=f"Updated by worker {worker_id}",
-                    priority=worker_id % 5
+                    priority=worker_id % 5,
+                    payload=payload
                 )
                 if result:
                     local_updates += 1
@@ -347,11 +492,13 @@ class TodoAPITester:
         async def writer_worker(session: aiohttp.ClientSession, worker_id: int):
             """Worker that writes."""
             for todo_id in todo_ids[:10]:  # Update first 10 TODOs
+                payload = self.generate_large_payload(min_size_kb=3)
                 result = await self.update_todo(
                     session,
                     todo_id,
                     title=f"Mixed workload update {worker_id}",
-                    completed=worker_id % 2 == 0
+                    completed=worker_id % 2 == 0,
+                    payload=payload
                 )
                 if result:
                     stats["writes"] += 1
@@ -408,12 +555,14 @@ class TodoAPITester:
         
         async def updater_worker(session: aiohttp.ClientSession, worker_id: int):
             """Worker that updates the same TODO."""
+            payload = self.generate_large_payload(min_size_kb=3)
             result = await self.update_todo(
                 session,
                 todo_id,
                 title=f"Race condition test {worker_id}",
                 priority=worker_id % 5,
-                completed=worker_id % 2 == 0
+                completed=worker_id % 2 == 0,
+                payload=payload
             )
             if result:
                 return result
@@ -482,18 +631,37 @@ class TodoAPITester:
         async with aiohttp.ClientSession() as session:
             for count in test_counts:
                 batch_start = time.time()
-                tasks = [
-                    self.create_todo(session, f"Scale test {i}", priority=i % 5)
-                    for i in range(count)
-                ]
+                total_payload_size_kb = 0
+                tasks = []
+                for i in range(count):
+                    # Generate sizable payload for each TODO
+                    payload = self.generate_large_payload(min_size_kb=3)
+                    payload_size = len(json.dumps(payload).encode('utf-8')) / 1024
+                    total_payload_size_kb += payload_size
+                    tasks.append(
+                        self.create_todo(
+                            session, 
+                            f"Scale test {i}", 
+                            priority=i % 5,
+                            payload=payload
+                        )
+                    )
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 created = sum(1 for r in results if r is not None and not isinstance(r, Exception))
                 batch_duration = time.time() - batch_start
                 
+                # Verify payloads
+                payload_verified = sum(
+                    1 for r in results 
+                    if r is not None and not isinstance(r, Exception) and r.get("payload")
+                )
+                
                 details[f"batch_{count}"] = {
                     "created": created,
                     "duration": f"{batch_duration:.2f}s",
-                    "rate": f"{created/batch_duration:.2f}/s" if batch_duration > 0 else "N/A"
+                    "rate": f"{created/batch_duration:.2f}/s" if batch_duration > 0 else "N/A",
+                    "payload_size_mb": f"{total_payload_size_kb/1024:.2f}",
+                    "payloads_verified": payload_verified
                 }
                 
                 max_created = max(max_created, created)
@@ -554,7 +722,13 @@ class TodoAPITester:
             print("Warning: No TODOs available for concurrent tests. Creating some...")
             async with aiohttp.ClientSession() as session:
                 for i in range(20):
-                    todo = await self.create_todo(session, f"Test TODO {i}", priority=i % 5)
+                    payload = self.generate_large_payload(min_size_kb=3)
+                    todo = await self.create_todo(
+                        session, 
+                        f"Test TODO {i}", 
+                        priority=i % 5,
+                        payload=payload
+                    )
                     if todo:
                         test_todo_ids.append(todo["id"])
         

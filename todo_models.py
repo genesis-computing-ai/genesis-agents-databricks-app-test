@@ -12,6 +12,7 @@ class TodoCreate(BaseModel):
     description: Optional[str] = Field(None, description="TODO description")
     priority: int = Field(2, ge=0, le=4, description="Priority: 0=Critical, 1=High, 2=Medium, 3=Low, 4=Backlog")
     due_date: Optional[datetime] = Field(None, description="Due date for the TODO")
+    payload: Optional[dict] = Field(None, description="JSON payload for additional data")
     
     @field_validator("title")
     @classmethod
@@ -29,6 +30,7 @@ class TodoUpdate(BaseModel):
     completed: Optional[bool] = Field(None, description="Completion status")
     priority: Optional[int] = Field(None, ge=0, le=4, description="Priority: 0=Critical, 1=High, 2=Medium, 3=Low, 4=Backlog")
     due_date: Optional[datetime] = Field(None, description="Due date for the TODO")
+    payload: Optional[dict] = Field(None, description="JSON payload for additional data")
     
     @field_validator("title")
     @classmethod
@@ -47,6 +49,7 @@ class TodoResponse(BaseModel):
     completed: bool
     priority: int
     due_date: Optional[datetime]
+    payload: Optional[dict]
     created_at: datetime
     updated_at: datetime
     

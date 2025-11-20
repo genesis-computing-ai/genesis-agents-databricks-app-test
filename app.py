@@ -1042,6 +1042,21 @@ async def todos_page():
                 border-radius: 4px;
                 box-sizing: border-box;
             }
+            small {
+                display: block;
+                margin-top: -8px;
+                margin-bottom: 10px;
+            }
+            .payload-display {
+                background-color: #f8f9fa;
+                padding: 8px;
+                border-radius: 4px;
+                font-family: monospace;
+                font-size: 12px;
+                margin-top: 5px;
+                white-space: pre-wrap;
+                word-break: break-all;
+            }
             button {
                 background-color: #0066cc;
                 color: white;
@@ -1161,6 +1176,11 @@ async def todos_page():
                         <label for="due-date">Due Date</label>
                         <input type="datetime-local" id="due-date">
                     </div>
+                    <div class="form-group">
+                        <label for="payload">Payload (JSON)</label>
+                        <textarea id="payload" rows="4" placeholder='{"key": "value"}'></textarea>
+                        <small style="color: #666;">Enter valid JSON object or leave empty</small>
+                    </div>
                     <button type="submit">Create TODO</button>
                 </form>
                 <div id="create-message"></div>
@@ -1205,12 +1225,24 @@ async def todos_page():
                 const description = document.getElementById('description').value;
                 const priority = parseInt(document.getElementById('priority').value);
                 const dueDate = document.getElementById('due-date').value;
+                const payloadText = document.getElementById('payload').value.trim();
+                
+                let payload = null;
+                if (payloadText) {
+                    try {
+                        payload = JSON.parse(payloadText);
+                    } catch (e) {
+                        showMessage('create-message', 'Error: Invalid JSON in payload field', false);
+                        return;
+                    }
+                }
                 
                 const todoData = {
                     title: title,
                     description: description || null,
                     priority: priority,
-                    due_date: dueDate || null
+                    due_date: dueDate || null,
+                    payload: payload
                 };
                 
                 try {
@@ -1265,11 +1297,13 @@ async def todos_page():
                         const createdDate = new Date(todo.created_at).toLocaleString();
                         const priorityLabels = ['Critical', 'High', 'Medium', 'Low', 'Backlog'];
                         const priorityClass = `priority-${todo.priority}`;
+                        const payloadDisplay = todo.payload ? `<div class="payload-display">Payload: ${escapeHtml(JSON.stringify(todo.payload, null, 2))}</div>` : '';
                         
                         return `
                             <div class="todo-item ${todo.completed ? 'completed' : ''}" id="todo-${todo.id}">
                                 <h3>${escapeHtml(todo.title)} ${todo.completed ? '✓' : ''}</h3>
                                 ${todo.description ? '<p>' + escapeHtml(todo.description) + '</p>' : ''}
+                                ${payloadDisplay}
                                 <div class="todo-meta">
                                     <span class="priority ${priorityClass}">${priorityLabels[todo.priority]}</span>
                                     <span>Due: ${dueDate}</span>
@@ -1310,12 +1344,27 @@ async def todos_page():
             }
             
             async function editTodo(todoId) {
-                const title = prompt('Enter new title:');
+                // Fetch current todo to get existing values
+                let currentTodo = null;
+                try {
+                    const getResponse = await fetch(`/api/todo/${todoId}`);
+                    if (!getResponse.ok) {
+                        alert('Error loading TODO details');
+                        return;
+                    }
+                    currentTodo = await getResponse.json();
+                } catch (err) {
+                    alert('Error loading TODO: ' + err.message);
+                    return;
+                }
+                
+                const title = prompt('Enter new title:', currentTodo.title || '');
                 if (title === null) return;
                 
-                const description = prompt('Enter new description (or leave empty):');
-                const priority = prompt('Enter priority (0-4):');
-                const dueDate = prompt('Enter due date (YYYY-MM-DDTHH:mm or leave empty):');
+                const description = prompt('Enter new description (or leave empty):', currentTodo.description || '');
+                const priority = prompt('Enter priority (0-4):', currentTodo.priority?.toString() || '2');
+                const dueDate = prompt('Enter due date (YYYY-MM-DDTHH:mm or leave empty):', currentTodo.due_date ? new Date(currentTodo.due_date).toISOString().slice(0, 16) : '');
+                const payloadText = prompt('Enter payload as JSON (or leave empty):', currentTodo.payload ? JSON.stringify(currentTodo.payload, null, 2) : '');
                 
                 const updateData = {
                     title: title,
@@ -1328,6 +1377,18 @@ async def todos_page():
                 
                 if (dueDate !== null && dueDate !== '') {
                     updateData.due_date = dueDate;
+                }
+                
+                if (payloadText !== null && payloadText.trim() !== '') {
+                    try {
+                        updateData.payload = JSON.parse(payloadText.trim());
+                    } catch (e) {
+                        alert('Error: Invalid JSON in payload field');
+                        return;
+                    }
+                } else if (payloadText === '') {
+                    // Empty string means clear the payload
+                    updateData.payload = null;
                 }
                 
                 try {
