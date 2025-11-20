@@ -19,34 +19,30 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Check if indexes already exist to avoid errors
+    # Create indexes using PostgreSQL's IF NOT EXISTS to avoid errors
+    # This avoids the need to check for existence separately, which can cause connection issues
+    print("DEBUG: Starting upgrade in add_todo_indexes")
     connection = op.get_bind()
     
-    def index_exists(index_name: str) -> bool:
-        """Check if an index already exists."""
-        result = connection.execute(text("""
-            SELECT EXISTS (
-                SELECT 1 FROM pg_indexes 
-                WHERE indexname = :index_name
-            )
-        """), {"index_name": index_name})
-        return result.scalar()
+    # Use raw SQL with IF NOT EXISTS to create indexes safely
+    # This avoids connection management issues with op.get_bind()
+    indexes = [
+        ('idx_todos_completed', ['completed']),
+        ('idx_todos_priority', ['priority']),
+        ('idx_todos_created_at', ['created_at']),
+        ('idx_todos_completed_priority', ['completed', 'priority']),
+    ]
     
-    # Index for filtering by completion status
-    if not index_exists('idx_todos_completed'):
-        op.create_index('idx_todos_completed', 'todos', ['completed'])
+    for index_name, columns in indexes:
+        print(f"DEBUG: Creating index {index_name}")
+        columns_str = ', '.join(columns)
+        connection.execute(text(f"""
+            CREATE INDEX IF NOT EXISTS {index_name} 
+            ON todos ({columns_str})
+        """))
+        print(f"DEBUG: Created index {index_name}")
     
-    # Index for filtering by priority
-    if not index_exists('idx_todos_priority'):
-        op.create_index('idx_todos_priority', 'todos', ['priority'])
-    
-    # Index for ordering by creation date (most common query pattern)
-    if not index_exists('idx_todos_created_at'):
-        op.create_index('idx_todos_created_at', 'todos', ['created_at'])
-    
-    # Composite index for common filter combinations (completed + priority)
-    if not index_exists('idx_todos_completed_priority'):
-        op.create_index('idx_todos_completed_priority', 'todos', ['completed', 'priority'])
+    print("DEBUG: Finished upgrade in add_todo_indexes")
 
 
 def downgrade() -> None:

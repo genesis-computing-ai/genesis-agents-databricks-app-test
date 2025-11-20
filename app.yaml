@@ -32,9 +32,21 @@ env:
     valueFrom: OPENAI_API_KEY
 
 # Database configuration for PostgreSQL/Lakebase
-database:
+# Use DB_ENV environment variable to switch between 'local' and 'databricks'
+# Default is 'databricks' if not specified
+
+# Databricks Postgres configuration
+database_databricks:
   host: "instance-3af3a681-723d-4026-b9d0-2a29fc754893.database.cloud.databricks.com"
   port: 5432
   database: "databricks_postgres"
   user: "dev_user"
   password: "test12345"  # Consider using a secret in production
+
+# Local Postgres configuration (for development)
+database_local:
+  host: "localhost"
+  port: 5432
+  database: "antongorshkov"  # Change to your local database name if different
+  user: "antongorshkov"      # Change to your local PostgreSQL user if different
+  password: ""          # Set your local PostgreSQL password if required

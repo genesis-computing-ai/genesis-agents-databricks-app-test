@@ -31,35 +31,56 @@ def load_app_yaml() -> Dict:
 
 
 def get_database_config() -> Dict[str, str]:
-    """Extract database configuration from app.yaml."""
+    """
+    Extract database configuration from app.yaml.
+    
+    Uses DB_ENV environment variable to determine which database config to use:
+    - 'local' -> uses database_local section
+    - 'databricks' or unset -> uses database_databricks section
+    
+    Individual database settings can be overridden via environment variables:
+    - DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
+    """
     config = load_app_yaml()
     
+    # Determine which database config to use based on DB_ENV
+    db_env = os.getenv("DB_ENV", "databricks").lower()
+    
+    if db_env == "local":
+        config_key = "database_local"
+    else:
+        config_key = "database_databricks"
+    
     # Check for database section in config
-    database_config = config.get("database")
+    database_config = config.get(config_key)
     
     if not database_config:
         raise ValueError(
-            "Database configuration not found in app.yaml. "
-            "Please add a 'database:' section with host, port, database, user, and password fields."
+            f"Database configuration '{config_key}' not found in app.yaml. "
+            f"Please add a '{config_key}:' section with host, port, database, user, and password fields."
         )
     
+    # Allow environment variables to override config file values
+    db_config = {
+        "host": os.getenv("DB_HOST") or str(database_config.get("host", "")),
+        "port": os.getenv("DB_PORT") or str(database_config.get("port", "")),
+        "database": os.getenv("DB_NAME") or str(database_config.get("database", "")),
+        "user": os.getenv("DB_USER") or str(database_config.get("user", "")),
+        "password": os.getenv("DB_PASSWORD") or str(database_config.get("password", "")),
+    }
+    
     # Validate required fields
-    required_fields = ["host", "port", "database", "user", "password"]
-    missing_fields = [field for field in required_fields if field not in database_config]
+    required_fields = ["host", "port", "database", "user"]
+    missing_fields = [field for field in required_fields if not db_config[field]]
     
     if missing_fields:
         raise ValueError(
             f"Missing required database configuration fields: {', '.join(missing_fields)}. "
-            "Please ensure all fields (host, port, database, user, password) are present in app.yaml."
+            f"Please ensure all fields (host, port, database, user) are present in app.yaml '{config_key}' section "
+            "or set via environment variables (DB_HOST, DB_PORT, DB_NAME, DB_USER)."
         )
     
-    return {
-        "host": str(database_config["host"]),
-        "port": str(database_config["port"]),
-        "database": str(database_config["database"]),
-        "user": str(database_config["user"]),
-        "password": str(database_config["password"]),
-    }
+    return db_config
 
 
 def get_database_url() -> str:
