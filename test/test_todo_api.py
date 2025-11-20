@@ -36,12 +36,23 @@ class TestResult:
 class TodoAPITester:
     """Test suite for TODO API."""
     
-    def __init__(self, base_url: str = "http://localhost:8000"):
+    def __init__(self, base_url: str = "http://localhost:8000", cookie: Optional[str] = None):
         self.base_url = base_url
         self.api_base = f"{base_url}/api/todo"
+        self.cookie = cookie
         self.results: List[TestResult] = []
         self.created_todo_ids: List[int] = []
         self.lock = threading.Lock()
+    
+    def get_headers(self) -> Dict[str, str]:
+        """Get default headers including cookie if provided."""
+        headers = {
+            'accept': '*/*',
+            'content-type': 'application/json',
+        }
+        if self.cookie:
+            headers['cookie'] = self.cookie
+        return headers
     
     def generate_large_payload(self, min_size_kb: int = 3) -> Dict[str, Any]:
         """
@@ -175,7 +186,7 @@ class TodoAPITester:
             if payload is not None:
                 data["payload"] = payload
                 
-            async with session.post(self.api_base, json=data) as resp:
+            async with session.post(self.api_base, json=data, headers=self.get_headers()) as resp:
                 if resp.status == 201:
                     todo = await resp.json()
                     with self.lock:
@@ -190,7 +201,7 @@ class TodoAPITester:
     async def get_todo(self, session: aiohttp.ClientSession, todo_id: int) -> Optional[Dict]:
         """Get a TODO by ID."""
         try:
-            async with session.get(f"{self.api_base}/{todo_id}") as resp:
+            async with session.get(f"{self.api_base}/{todo_id}", headers=self.get_headers()) as resp:
                 if resp.status == 200:
                     return await resp.json()
                 return None
@@ -201,7 +212,7 @@ class TodoAPITester:
                          todo_id: int, **kwargs) -> Optional[Dict]:
         """Update a TODO."""
         try:
-            async with session.put(f"{self.api_base}/{todo_id}", json=kwargs) as resp:
+            async with session.put(f"{self.api_base}/{todo_id}", json=kwargs, headers=self.get_headers()) as resp:
                 if resp.status == 200:
                     return await resp.json()
                 return None
@@ -218,7 +229,7 @@ class TodoAPITester:
             if priority is not None:
                 params["priority"] = str(priority)
                 
-            async with session.get(self.api_base, params=params) as resp:
+            async with session.get(self.api_base, params=params, headers=self.get_headers()) as resp:
                 if resp.status == 200:
                     return await resp.json()
                 return []
@@ -228,7 +239,7 @@ class TodoAPITester:
     async def delete_todo(self, session: aiohttp.ClientSession, todo_id: int) -> bool:
         """Delete a TODO."""
         try:
-            async with session.delete(f"{self.api_base}/{todo_id}") as resp:
+            async with session.delete(f"{self.api_base}/{todo_id}", headers=self.get_headers()) as resp:
                 return resp.status == 204
         except Exception as e:
             return False
@@ -794,8 +805,9 @@ async def main():
     import sys
     
     base_url = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8000"
+    cookie = sys.argv[2] if len(sys.argv) > 2 else None
     
-    tester = TodoAPITester(base_url)
+    tester = TodoAPITester(base_url, cookie=cookie)
     
     try:
         await tester.run_all_tests()

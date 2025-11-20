@@ -4,7 +4,7 @@ Database connection management using SQLAlchemy Async.
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker, AsyncEngine
-from database_config import get_database_url
+from .database_config import get_database_url
 
 
 # Global async engine instance (created lazily)

@@ -12,7 +12,7 @@ from alembic.script import ScriptDirectory
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import inspect, text, create_engine, Engine
-from database_config import get_database_url
+from .database_config import get_database_url
 
 logger = logging.getLogger(__name__)
 

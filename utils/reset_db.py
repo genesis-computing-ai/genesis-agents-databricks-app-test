@@ -2,9 +2,11 @@
 from sqlalchemy import create_engine, text
 import os
 import yaml
+from pathlib import Path
 
-# Read config
-with open("app.yaml", "r") as f:
+# Read config - look for app.yaml in parent directory
+app_yaml_path = Path(__file__).parent.parent / "app.yaml"
+with open(app_yaml_path, "r") as f:
     config = yaml.safe_load(f)
 
 local_conf = config["database_local"]

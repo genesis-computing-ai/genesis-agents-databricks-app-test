@@ -23,7 +23,7 @@ from fastapi import FastAPI, HTTPException, Form, File, UploadFile, Request, Que
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from databricks.sdk import WorkspaceClient
-from db_init import init_database
+from utils.db_init import init_database
 from todo_repository import (
     create_todo,
     get_todo,
@@ -33,7 +33,7 @@ from todo_repository import (
     test_select_one,
 )
 from todo_models import TodoCreate, TodoUpdate, TodoResponse
-from timing_utils import TimingInfo
+from utils.timing_utils import TimingInfo
 from sqlalchemy.exc import SQLAlchemyError
 import time
 
@@ -58,7 +58,7 @@ async def lifespan(app: FastAPI):
     
     # Shutdown - cleanup async engine
     try:
-        from db_connection import close_async_engine
+        from utils.db_connection import close_async_engine
         await close_async_engine()
         logger.info("Database connections closed")
     except Exception as e:

@@ -3,7 +3,7 @@ Database initialization module with automatic migrations.
 """
 import logging
 from sqlalchemy.exc import SQLAlchemyError
-from db_migrations import run_migrations
+from .db_migrations import run_migrations
 
 logger = logging.getLogger(__name__)
 

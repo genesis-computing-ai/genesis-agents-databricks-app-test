@@ -5,10 +5,10 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
 from sqlalchemy import select, insert, update, delete
 from sqlalchemy.exc import SQLAlchemyError, IntegrityError
-from db_connection import get_async_session
+from utils.db_connection import get_async_session
 from db_schema import todos_table
 from todo_models import TodoCreate, TodoUpdate, TodoResponse
-from timing_utils import TimingInfo, TimingContext
+from utils.timing_utils import TimingInfo, TimingContext
 import logging
 import time
 

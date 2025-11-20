@@ -6,7 +6,7 @@ from sqlalchemy import pool
 from alembic import context
 
 # Import our database configuration and schema
-from db_migrations import get_sync_engine
+from utils.db_migrations import get_sync_engine
 from db_schema import metadata
 
 # this is the Alembic Config object, which provides
@@ -47,7 +47,7 @@ target_metadata = metadata
 
 def get_url():
     """Get database URL from our configuration."""
-    from database_config import get_database_url
+    from utils.database_config import get_database_url
     return get_database_url()
 
 
