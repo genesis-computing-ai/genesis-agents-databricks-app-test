@@ -11,8 +11,9 @@ from alembic import command
 from alembic.script import ScriptDirectory
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy import inspect, text, create_engine, Engine
-from .database_config import get_database_url
+from sqlalchemy import inspect, text, create_engine, Engine, event
+from .database_config import get_database_config, get_backend_type
+from .db_backends import get_backend
 
 logger = logging.getLogger(__name__)
 
@@ -21,24 +22,67 @@ _sync_engine: Engine | None = None
 
 
 def get_sync_engine() -> Engine:
-    """Get or create sync engine for Alembic migrations."""
+    """
+    Get or create sync engine for Alembic migrations.
+    
+    Uses the configured database backend to get backend-specific settings.
+    """
     global _sync_engine
     if _sync_engine is None:
-        database_url = get_database_url()
+        # Get backend instance for current configuration
+        db_config = get_database_config()
+        backend_type = get_backend_type()
+        backend = get_backend(backend_type)
+        
+        # Get sync URL from backend
+        database_url = backend.get_sync_url(db_config)
+        
+        # Get migration settings from backend
+        migration_settings = backend.get_migration_settings()
+        
+        # Extract connect_args from migration settings (if present)
+        connect_args = migration_settings.get("connect_args", {})
+        
+        # Create sync engine with backend-specific settings
+        # Use smaller pool for migrations
         _sync_engine = create_engine(
             database_url,
-            pool_size=5,  # Smaller pool for migrations
+            pool_size=5,
             max_overflow=5,
             pool_pre_ping=True,
             echo=False,
-            connect_args={
-                "connect_timeout": 10,
-                "options": "-c statement_timeout=60000"  # 60 second timeout for index creation
-            }
+            connect_args=connect_args
         )
+        
+        # Apply backend-specific migration setup (e.g., SQLite pragmas)
+        _apply_backend_migration_setup(_sync_engine, backend, migration_settings)
+    
     return _sync_engine
 
-logger = logging.getLogger(__name__)
+
+def _apply_backend_migration_setup(engine: Engine, backend, migration_settings: dict) -> None:
+    """
+    Apply backend-specific migration setup (e.g., SQLite pragmas).
+    
+    Args:
+        engine: SQLAlchemy sync engine
+        backend: Database backend instance
+        migration_settings: Migration settings from backend
+    """
+    pragmas = migration_settings.get("pragmas", [])
+    if pragmas:
+        # Apply pragmas on connection
+        @event.listens_for(engine, "connect")
+        def set_pragmas(dbapi_conn, connection_record):
+            cursor = dbapi_conn.cursor()
+            for pragma in pragmas:
+                try:
+                    cursor.execute(pragma)
+                except Exception as e:
+                    logger.warning(f"Failed to execute pragma '{pragma}': {e}")
+            cursor.close()
+
+
 
 
 def run_migrations():

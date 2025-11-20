@@ -31,12 +31,23 @@ env:
   - name: OPENAI_API_KEY
     valueFrom: OPENAI_API_KEY
 
-# Database configuration for PostgreSQL/Lakebase
+# Database configuration
 # Use DB_ENV environment variable to switch between 'local' and 'databricks'
 # Default is 'databricks' if not specified
+#
+# Supported database backends:
+# - PostgreSQL (default, if 'type' field is not specified)
+# - SQLite (set 'type: sqlite')
+#
+# To use a different backend, add a 'type' field to your database configuration:
+#   type: postgresql  # or 'sqlite'
+#
+# For PostgreSQL, provide: host, port, database, user, password
+# For SQLite, provide: database (file path, e.g., './todos.db')
 
-# Databricks Postgres configuration
+# Databricks Postgres configuration (PostgreSQL backend)
 database_databricks:
+  # type: postgresql  # Optional, defaults to postgresql if not specified
   host: "instance-3af3a681-723d-4026-b9d0-2a29fc754893.database.cloud.databricks.com"
   port: 5432
   database: "databricks_postgres"
@@ -45,8 +56,15 @@ database_databricks:
 
 # Local Postgres configuration (for development)
 database_local:
+  # type: postgresql  # Optional, defaults to postgresql if not specified
   host: "localhost"
   port: 5432
   database: "antongorshkov"  # Change to your local database name if different
   user: "antongorshkov"      # Change to your local PostgreSQL user if different
   password: ""          # Set your local PostgreSQL password if required
+
+# SQLite configuration (for local development)
+# Set DB_ENV=sqlite to use SQLite instead of PostgreSQL
+database_sqlite:
+  type: sqlite
+  database: "./todos.db"  # File path (relative or absolute)

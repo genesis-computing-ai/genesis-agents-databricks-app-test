@@ -4,7 +4,8 @@ Database connection management using SQLAlchemy Async.
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker, AsyncEngine
-from .database_config import get_database_url
+from .database_config import get_database_config, get_backend_type
+from .db_backends import get_backend
 
 
 # Global async engine instance (created lazily)
@@ -16,28 +17,33 @@ def get_async_engine() -> AsyncEngine:
     """
     Get or create async SQLAlchemy engine instance.
     
+    Uses the configured database backend to get backend-specific settings.
+    
     Returns:
         SQLAlchemy AsyncEngine instance with connection pooling
     """
     global _async_engine, _async_session_factory
     
     if _async_engine is None:
-        database_url = get_database_url()
-        # Convert postgresql:// to postgresql+asyncpg:// for async driver
-        async_database_url = database_url.replace("postgresql://", "postgresql+asyncpg://")
+        # Get backend instance for current configuration
+        db_config = get_database_config()
+        backend_type = get_backend_type()
+        backend = get_backend(backend_type)
         
-        # Create async engine with connection pooling
-        # pool_size=50 as requested, with overflow for peak loads
+        # Get async URL from backend
+        async_database_url = backend.get_async_url(db_config)
+        
+        # Get pool configuration from backend
+        pool_config = backend.get_pool_config()
+        
+        # Get connection arguments from backend
+        connect_args = backend.get_connect_args()
+        
+        # Create async engine with backend-specific settings
         _async_engine = create_async_engine(
             async_database_url,
-            pool_size=50,  # Increased from 5
-            max_overflow=20,  # Additional connections for peak loads
-            pool_pre_ping=True,  # Verify connections before using
-            pool_recycle=3600,  # Recycle connections after 1 hour
-            echo=False,  # Set to True for SQL query logging
-            connect_args={
-                "command_timeout": 30,  # 30 second command timeout
-            }
+            **pool_config,
+            connect_args=connect_args
         )
         
         # Create async session factory

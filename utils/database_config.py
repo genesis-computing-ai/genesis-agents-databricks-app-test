@@ -6,6 +6,7 @@ import yaml
 from pathlib import Path
 from typing import Dict, Optional
 from urllib.parse import quote_plus
+from .db_backends import detect_backend_type, get_backend
 
 
 def load_app_yaml() -> Dict:
@@ -40,6 +41,9 @@ def get_database_config() -> Dict[str, str]:
     
     Individual database settings can be overridden via environment variables:
     - DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
+    
+    Returns:
+        Dictionary with database configuration (backend-agnostic format)
     """
     config = load_app_yaml()
     
@@ -48,6 +52,8 @@ def get_database_config() -> Dict[str, str]:
     
     if db_env == "local":
         config_key = "database_local"
+    elif db_env == "sqlite":
+        config_key = "database_sqlite"
     else:
         config_key = "database_databricks"
     
@@ -57,8 +63,12 @@ def get_database_config() -> Dict[str, str]:
     if not database_config:
         raise ValueError(
             f"Database configuration '{config_key}' not found in app.yaml. "
-            f"Please add a '{config_key}:' section with host, port, database, user, and password fields."
+            f"Please add a '{config_key}:' section with appropriate fields for your database backend."
         )
+    
+    # Convert to dict if needed (YAML might return different types)
+    if not isinstance(database_config, dict):
+        database_config = dict(database_config) if hasattr(database_config, '__dict__') else {}
     
     # Allow environment variables to override config file values
     db_config = {
@@ -69,35 +79,46 @@ def get_database_config() -> Dict[str, str]:
         "password": os.getenv("DB_PASSWORD") or str(database_config.get("password", "")),
     }
     
-    # Validate required fields
-    required_fields = ["host", "port", "database", "user"]
-    missing_fields = [field for field in required_fields if not db_config[field]]
+    # Preserve type field if present (for backend detection)
+    if "type" in database_config:
+        db_config["type"] = database_config["type"]
     
-    if missing_fields:
-        raise ValueError(
-            f"Missing required database configuration fields: {', '.join(missing_fields)}. "
-            f"Please ensure all fields (host, port, database, user) are present in app.yaml '{config_key}' section "
-            "or set via environment variables (DB_HOST, DB_PORT, DB_NAME, DB_USER)."
-        )
+    # Detect backend type and validate using backend
+    backend_type = detect_backend_type(db_config)
+    backend = get_backend(backend_type)
+    
+    # Ensure database exists (for file-based databases like SQLite)
+    backend.ensure_database_exists(db_config)
+    
+    # Validate configuration using backend
+    backend.validate_config(db_config)
     
     return db_config
+
+
+def get_backend_type() -> str:
+    """
+    Get the database backend type from configuration.
+    
+    Returns:
+        Backend type name (e.g., 'postgresql', 'sqlite')
+    """
+    config = get_database_config()
+    return detect_backend_type(config)
 
 
 def get_database_url() -> str:
     """
     Construct SQLAlchemy database connection URL from app.yaml configuration.
     
+    Uses the appropriate backend to generate the connection URL.
+    
     Returns:
-        PostgreSQL connection URL in format: postgresql://user:password@host:port/database
+        SQLAlchemy connection URL (sync) for the configured backend
     """
     db_config = get_database_config()
+    backend_type = detect_backend_type(db_config)
+    backend = get_backend(backend_type)
     
-    # URL-encode password and username to handle special characters
-    user = quote_plus(db_config["user"])
-    password = quote_plus(db_config["password"])
-    host = db_config["host"]
-    port = db_config["port"]
-    database = db_config["database"]
-    
-    return f"postgresql://{user}:{password}@{host}:{port}/{database}"
+    return backend.get_sync_url(db_config)
 

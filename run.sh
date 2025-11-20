@@ -1,8 +1,9 @@
 #!/bin/bash
 # Launcher script that reads environment variables from app.yaml and runs the app
-# Usage: ./run.sh [local|databricks]
-#   local      - Connect to local PostgreSQL database
-#   databricks - Connect to Databricks PostgreSQL database (default)
+# Usage: ./run.sh [local|local_sqlite|databricks]
+#   local       - Connect to local PostgreSQL database
+#   local_sqlite - Connect to local SQLite database
+#   databricks  - Connect to Databricks PostgreSQL database (default)
 
 set -e
 
@@ -11,12 +12,15 @@ DB_ENV_ARG=""
 if [ "$1" = "local" ]; then
     DB_ENV_ARG="local"
     echo "Using LOCAL PostgreSQL database"
+elif [ "$1" = "local_sqlite" ]; then
+    DB_ENV_ARG="sqlite"
+    echo "Using LOCAL SQLite database"
 elif [ "$1" = "databricks" ]; then
     DB_ENV_ARG="databricks"
     echo "Using DATABRICKS PostgreSQL database"
 elif [ -n "$1" ]; then
-    echo "Error: Unknown argument '$1'. Use 'local' or 'databricks'"
-    echo "Usage: $0 [local|databricks]"
+    echo "Error: Unknown argument '$1'. Use 'local', 'local_sqlite', or 'databricks'"
+    echo "Usage: $0 [local|local_sqlite|databricks]"
     exit 1
 else
     DB_ENV_ARG="databricks"

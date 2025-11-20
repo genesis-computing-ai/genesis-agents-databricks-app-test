@@ -20,7 +20,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     # Add payload JSON column to todos table
-    op.add_column('todos', sa.Column('payload', postgresql.JSON(astext_type=sa.Text()), nullable=True))
+    # Use dialect-aware JSON column type
+    bind = op.get_bind()
+    if bind.dialect.name == 'postgresql':
+        # PostgreSQL supports native JSON type
+        op.add_column('todos', sa.Column('payload', postgresql.JSON(astext_type=sa.Text()), nullable=True))
+    else:
+        # SQLite and other databases use SQLAlchemy's generic JSON type
+        op.add_column('todos', sa.Column('payload', sa.JSON(), nullable=True))
 
 
 def downgrade() -> None:

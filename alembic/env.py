@@ -84,10 +84,37 @@ def run_migrations_online() -> None:
     """
     # Use sync engine for Alembic (Alembic requires sync operations)
     connectable = get_sync_engine()
+    
+    # Get backend-specific migration settings
+    from utils.database_config import get_backend_type
+    from utils.db_backends import get_backend
+    
+    backend_type = get_backend_type()
+    backend = get_backend(backend_type)
+    migration_settings = backend.get_migration_settings()
+    
+    # Apply backend-specific pragmas if needed (e.g., SQLite)
+    pragmas = migration_settings.get("pragmas", [])
+    if pragmas:
+        from sqlalchemy import event
+        @event.listens_for(connectable, "connect")
+        def set_pragmas(dbapi_conn, connection_record):
+            cursor = dbapi_conn.cursor()
+            for pragma in pragmas:
+                try:
+                    cursor.execute(pragma)
+                except Exception:
+                    pass  # Ignore errors for pragmas that may already be set
+            cursor.close()
 
     with connectable.connect() as connection:
+        # Get render_as_batch setting from backend (for SQLite compatibility)
+        render_as_batch = migration_settings.get("render_as_batch", False)
+        
         context.configure(
-            connection=connection, target_metadata=target_metadata
+            connection=connection,
+            target_metadata=target_metadata,
+            render_as_batch=render_as_batch
         )
         
         # Use Alembic's transaction management
